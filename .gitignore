@@ -30,3 +30,8 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Local authentication and diagnostic artifacts
+/feishu-docs-auth-qr.png
+/vla-disk-note.xml
+/scripts/.probe/

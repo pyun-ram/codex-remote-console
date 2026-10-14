@@ -2242,9 +2242,10 @@ export default function Home() {
       if (message.method === "turn/started") {
         if (selectedThreadIdRef.current === tid) firstOutputTurn.current = null;
         updateActiveTurn(tid, (params.turn as Turn | undefined)?.id || null);
+        // A started turn makes a new session non-empty; otherwise the empty-session filter hides it once deselected.
         setThreads((current) => current.map((thread) => (
           threadKey(thread) === tid ? {
-            ...thread, updatedAt: nowSeconds(),
+            ...thread, empty: false, updatedAt: nowSeconds(),
             ...(thread.recencyAt != null ? { recencyAt: epochSeconds(params.turn?.startedAt) || nowSeconds() } : {})
           } : thread
         )));
@@ -4129,7 +4130,6 @@ export default function Home() {
   }, [threadByKey]);
 
   async function answerServerRequest(request: ServerRequest, result: unknown) {
-    setPendingRequests((current) => current.filter((item) => item.id !== request.id));
     const provider = ((request.params as { provider?: ProviderId } | undefined)?.provider || "codex") as ProviderId;
     if (provider !== "codex" && bootstrap?.providers) {
       await call({
@@ -4138,13 +4138,15 @@ export default function Home() {
         serverRequestId: request.id,
         result
       });
-      return;
+    } else {
+      await call({
+        type: "codex:serverResponse",
+        serverRequestId: request.id,
+        result
+      });
     }
-    await call({
-      type: "codex:serverResponse",
-      serverRequestId: request.id,
-      result
-    });
+    // Keep the dialog and its answers available if the server rejects the response.
+    setPendingRequests((current) => current.filter((item) => item.id !== request.id));
   }
 
   async function addFiles(files: File[]) {
@@ -5560,7 +5562,7 @@ export default function Home() {
       {sessionManagerOpen ? renderSessionManager() : null}
       {commandPanel ? renderCommandPanel() : null}
       {activeRequest ? (
-        <ServerRequestDialog request={activeRequest} onAnswer={answerServerRequest} />
+        <ServerRequestDialog key={`${activeRequest.params?.provider || "codex"}:${activeRequest.id}`} request={activeRequest} onAnswer={answerServerRequest} />
       ) : null}
       {directoryPickerOpen ? (
         <DirectoryPicker
@@ -5936,6 +5938,24 @@ function ServerRequestDialog({
   onAnswer: (request: ServerRequest, result: unknown) => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLElement | null>(null);
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+
+  async function answer(result: unknown) {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setSubmitError("");
+    try {
+      await onAnswer(request, result);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
 
   function approvalResult(decision: "approve" | "approveForSession" | "decline") {
     if (request.method === "item/permissions/requestApproval") {
@@ -5991,11 +6011,11 @@ function ServerRequestDialog({
     if (event.nativeEvent.isComposing || event.target instanceof HTMLButtonElement) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      onAnswer(request, declineResult);
+      void answer(declineResult);
     }
     if (event.key === "Enter" && !isTextEditingTarget(event.target)) {
       event.preventDefault();
-      onAnswer(request, approveResult);
+      void answer(approveResult);
     }
   }
 
@@ -6070,18 +6090,19 @@ function ServerRequestDialog({
             <pre className="requestJson">{JSON.stringify(request.params, null, 2)}</pre>
           </details>
         </div>
+        {submitError ? <p className="errorText" role="alert">Could not continue: {submitError}</p> : null}
         <footer>
-          <button type="button" onClick={() => onAnswer(request, declineResult)}>
+          <button type="button" disabled={submitting} onClick={() => void answer(declineResult)}>
             <X aria-hidden="true" size={17} />
             Decline
           </button>
           {canApproveForSession ? (
-            <button type="button" onClick={() => onAnswer(request, approveForSessionResult)}>
+            <button type="button" disabled={submitting} onClick={() => void answer(approveForSessionResult)}>
               <Check aria-hidden="true" size={17} />
               Approve session
             </button>
           ) : null}
-          <button className="primaryButton" type="button" onClick={() => onAnswer(request, approveResult)}>
+          <button className="primaryButton" type="button" disabled={submitting} onClick={() => void answer(approveResult)}>
             <Check aria-hidden="true" size={17} />
             Approve
           </button>
